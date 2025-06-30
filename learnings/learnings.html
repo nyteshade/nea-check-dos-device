@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AmigaOS C Programming: From macOS/ObjC to Amiga</title>
+  <link rel="stylesheet" href="tutorial-style.css">
+</head>
+<body>
+
+<h1>AmigaOS C Programming: From macOS/Objective-C to Amiga</h1>
+
+<p>This tutorial walks through the development of <code>CheckDosDevice</code>, a CLI utility for AmigaOS, explaining AmigaOS-specific concepts for developers familiar with modern C or Objective-C development.</p>
+
+<div class="toc">
+  <h3>Table of Contents</h3>
+  <ul>
+    <li><a href="#introduction">1. Introduction: The AmigaOS Environment</a></li>
+    <li><a href="#pointers">2. Understanding Amiga Pointers: BPTR, APTR, and STRPTR</a></li>
+    <li><a href="#cli">3. CLI Programming and ReadArgs</a></li>
+    <li><a href="#devices">4. The AmigaOS Device System</a></li>
+    <li><a href="#dos">5. DOS Device Lists and FileSystems</a></li>
+    <li><a href="#memory">6. Memory Management</a></li>
+    <li><a href="#compilation">7. Compilation and Return Codes</a></li>
+    <li><a href="#patterns">8. Code Patterns: OPrintf and Clean Code</a></li>
+    <li><a href="#evolution">9. Code Evolution and Design Decisions</a></li>
+  </ul>
+</div>
+
+<h2 id="introduction">1. Introduction: The AmigaOS Environment</h2>
+
+<p>AmigaOS is a message-passing, library-based operating system that differs significantly from Unix-like systems. Key differences:</p>
+
+<div class="comparison">
+  <div>
+    <h4>macOS/Unix</h4>
+    <ul>
+      <li>System calls via kernel</li>
+      <li>File descriptors are integers</li>
+      <li>Paths use forward slashes</li>
+      <li>Everything is a file</li>
+      <li>POSIX standard library</li>
+    </ul>
+  </div>
+  <div>
+    <h4>AmigaOS</h4>
+    <ul>
+      <li>Library function calls</li>
+      <li>Handles are pointers/structures</li>
+      <li>Paths use colons and slashes</li>
+      <li>Devices, volumes, and assigns</li>
+      <li>Custom libraries (dos.library, exec.library)</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="pointers">2. Understanding Amiga Pointers: BPTR, APTR, and STRPTR</h2>
+
+<p>One of the most confusing aspects of AmigaOS programming is its pointer system, inherited from BCPL (Basic Combined Programming Language).</p>
+
+<h3>BPTR (BCPL Pointer)</h3>
+
+<div class="info">
+  <strong>BPTR</strong> is a 32-bit value that points to memory, but shifted right by 2 bits. This allowed BCPL to address more memory on systems with limited address space.
+</div>
+
+<pre><code>// BPTR definition
+typedef LONG BPTR;  // It's just a LONG!
+
+// To convert BPTR to a C pointer:
+#define BADDR(x) ((APTR)((ULONG)(x) << 2))
+
+// Example from our code:
+BPTR lock = Lock("DH0:", ACCESS_READ);
+struct InfoData *info = AllocMem(sizeof(struct InfoData), 0);
+if (Info(lock, info)) {  // Info expects a BPTR
+    // Process info
+}
+UnLock(lock);  // UnLock also expects a BPTR</code></pre>
+
+<div class="warning">
+  <strong>Common Mistake:</strong> Treating BPTR as a regular pointer. This was the error in our first version where we used <code>struct FileLock *</code> instead of <code>BPTR</code>.
+</div>
+
+<h3>BCPL Strings</h3>
+
+<p>BCPL strings are different from C strings:</p>
+
+<pre><code>// C String: null-terminated
+char c_string[] = "Hello";  // H e l l o \0
+
+// BCPL String: length-prefixed
+// [5] H e l l o
+// First byte is the length
+
+// Converting BCPL string to C string:
+char *bstrName = (char *)BADDR(deviceNode->dn_Name);
+if (bstrName && bstrName[0] > 0) {
+    int len = bstrName[0];  // First byte is length
+    memcpy(devName, &bstrName[1], len);  // Copy from second byte
+    devName[len] = '\0';  // Add null terminator
+}</code></pre>
+
+<h3>Other Pointer Types</h3>
+
+<table>
+  <tr>
+    <th>Type</th>
+    <th>Definition</th>
+    <th>Usage</th>
+  </tr>
+  <tr>
+    <td><code>APTR</code></td>
+    <td><code>void *</code></td>
+    <td>Generic address pointer (like void* in C)</td>
+  </tr>
+  <tr>
+    <td><code>STRPTR</code></td>
+    <td><code>char *</code></td>
+    <td>C-style string pointer</td>
+  </tr>
+  <tr>
+    <td><code>BPTR</code></td>
+    <td><code>LONG</code></td>
+    <td>BCPL pointer (shifted address)</td>
+  </tr>
+  <tr>
+    <td><code>BSTR</code></td>
+    <td><code>LONG</code></td>
+    <td>BCPL string pointer</td>
+  </tr>
+</table>
+
+<h2 id="cli">3. CLI Programming and ReadArgs</h2>
+
+<p>AmigaOS has a sophisticated command-line argument parsing system that's more advanced than <code>getopt</code>:</p>
+
+<h3>ReadArgs Template System</h3>
+
+<pre><code>// Our template
+#define TEMPLATE "DEVICE/A,QUIET/S,DRIVER/K"
+
+// This creates a command that accepts:
+// - DEVICE: Required argument (/A)
+// - QUIET: Switch - present or not (/S)
+// - DRIVER: Keyword argument - requires DRIVER keyword (/K)</code></pre>
+
+<div class="info">
+  <strong>Template Modifiers:</strong>
+  <ul>
+    <li><code>/A</code> - Required argument</li>
+    <li><code>/S</code> - Switch (boolean)</li>
+    <li><code>/K</code> - Keyword required</li>
+    <li><code>/N</code> - Numeric argument</li>
+    <li><code>/M</code> - Multiple arguments</li>
+    <li><code>/F</code> - Rest of line</li>
+  </ul>
+</div>
+
+<h3>Using ReadArgs</h3>
+
+<pre><code>struct Arguments {
+    STRPTR device;  // Matches DEVICE in template
+    LONG quiet;     // Matches QUIET/S (LONG used for boolean)
+    STRPTR driver;  // Matches DRIVER/K
+};
+
+struct RDArgs *rdArgs = NULL;
+struct Arguments args = { NULL, FALSE, NULL };
+
+// Parse arguments
+rdArgs = ReadArgs(TEMPLATE, (LONG *)&args, NULL);
+if (!rdArgs) {
+    Printf("Usage: CheckDosDevice DEVICE/A,QUIET/S,DRIVER/K\n");
+    return RC_ERROR;
+}
+
+// Use arguments
+if (args.quiet) {
+    // Quiet mode enabled
+}
+
+// Clean up
+FreeArgs(rdArgs);</code></pre>
+
+<div class="note">
+  <strong>Why cast to (LONG *)?</strong> ReadArgs expects an array of LONGs. On 32-bit AmigaOS, pointers and LONGs are the same size, so the struct fields align with what ReadArgs expects.
+</div>
+
+<h2 id="devices">4. The AmigaOS Device System</h2>
+
+<p>Unlike Unix where everything is a file, AmigaOS has a formal device/unit system:</p>
+
+<h3>Device Communication</h3>
+
+<pre><code>// 1. Create a message port for async communication
+struct MsgPort *msgPort = CreateMsgPort();
+
+// 2. Create an I/O request
+struct IOStdReq *ioReq = (struct IOStdReq *)CreateIORequest(msgPort, 
+                                                sizeof(struct IOStdReq));
+
+// 3. Open the device
+BYTE error = OpenDevice("diskimage.device", 0, (struct IORequest *)ioReq, 0);
+//                      ^device name       ^unit  ^io request        ^flags
+
+if (error == 0) {
+    // Device opened successfully
+    // Can now send commands via ioReq
+    
+    // Must close when done
+    CloseDevice((struct IORequest *)ioReq);
+}
+
+// 4. Clean up
+DeleteIORequest((struct IORequest *)ioReq);
+DeleteMsgPort(msgPort);</code></pre>
+
+<div class="comparison">
+  <div>
+    <h4>macOS File Descriptor</h4>
+    <pre><code>int fd = open("/dev/disk0", O_RDONLY);
+if (fd >= 0) {
+    // Use fd
+    close(fd);
+}</code></pre>
+  </div>
+  <div>
+    <h4>AmigaOS Device</h4>
+    <pre><code>OpenDevice("trackdisk.device", 0, ioReq, 0);
+if (error == 0) {
+    // Use ioReq for commands
+    CloseDevice(ioReq);
+}</code></pre>
+  </div>
+</div>
+
+<h2 id="dos">5. DOS Device Lists and FileSystems</h2>
+
+<p>AmigaOS maintains a DOS device list that maps device names (like "DH0:") to handlers:</p>
+
+<h3>Walking the Device List</h3>
+
+<pre><code>// Get the DOS root node
+struct RootNode *rootNode = (struct RootNode *)DOSBase->dl_Root;
+struct DosInfo *dosInfo = (struct DosInfo *)BADDR(rootNode->rn_Info);
+
+// Lock the list (disable task switching)
+Forbid();
+
+// Walk through devices
+struct DeviceNode *deviceNode = (struct DeviceNode *)BADDR(dosInfo->di_DevInfo);
+while (deviceNode) {
+    // Process device
+    char *bstrName = (char *)BADDR(deviceNode->dn_Name);
+    // Convert BCPL string...
+    
+    // Next device
+    deviceNode = (struct DeviceNode *)BADDR(deviceNode->dn_Next);
+}
+
+Permit();  // Re-enable task switching</code></pre>
+
+<div class="warning">
+  <strong>Important:</strong> Always use Forbid()/Permit() when walking system lists to prevent the list from changing while you're reading it.
+</div>
+
+<h3>Device Startup Information</h3>
+
+<pre><code>// Devices created from mountlists have startup info
+if (deviceNode->dn_Startup) {
+    struct FileSysStartupMsg *startup = 
+        (struct FileSysStartupMsg *)BADDR(deviceNode->dn_Startup);
+    
+    // Get the device driver name (e.g., "diskimage.device")
+    char *driverName = (char *)BADDR(startup->fssm_Device);
+    
+    // Get the unit number
+    ULONG unit = startup->fssm_Unit;
+}</code></pre>
+
+<h2 id="memory">6. Memory Management</h2>
+
+<p>AmigaOS uses explicit memory allocation with type flags:</p>
+
+<h3>Allocation and Deallocation</h3>
+
+<pre><code>// Allocate memory
+struct InfoData *info = AllocMem(sizeof(struct InfoData), MEMF_CLEAR);
+//                                                         ^clear memory
+
+// Memory type flags:
+// MEMF_ANY    - Any memory
+// MEMF_CHIP   - Chip RAM (accessible by custom chips)
+// MEMF_FAST   - Fast RAM (CPU only)
+// MEMF_CLEAR  - Clear allocated memory
+// MEMF_PUBLIC - Shared memory
+
+// Always free with the exact size
+FreeMem(info, sizeof(struct InfoData));</code></pre>
+
+<div class="note">
+  <strong>No malloc/free!</strong> AmigaOS predates ANSI C. Use AllocMem/FreeMem instead. You must track the size for FreeMem.
+</div>
+
+<h2 id="compilation">7. Compilation and Return Codes</h2>
+
+<h3>SAS/C Compilation</h3>
+
+<pre><code># Compile and link in one step
+sc LINK CheckDosDevice.c
+
+# Separate compile and link
+sc CheckDosDevice.c      # Creates .o file
+slink FROM CheckDosDevice.o TO CheckDosDevice</code></pre>
+
+<h3>CLI Return Codes</h3>
+
+<table>
+  <tr>
+    <th>Code</th>
+    <th>Name</th>
+    <th>Meaning</th>
+    <th>Script Usage</th>
+  </tr>
+  <tr>
+    <td>0</td>
+    <td>OK</td>
+    <td>Success</td>
+    <td><code>IF NOT WARN</code></td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>WARN</td>
+    <td>Warning</td>
+    <td><code>IF WARN</code></td>
+  </tr>
+  <tr>
+    <td>10</td>
+    <td>ERROR</td>
+    <td>Error</td>
+    <td><code>IF ERROR</code></td>
+  </tr>
+  <tr>
+    <td>20</td>
+    <td>FAIL</td>
+    <td>Severe failure</td>
+    <td><code>IF FAIL</code></td>
+  </tr>
+</table>
+
+<h2 id="patterns">8. Code Patterns: OPrintf and Clean Code</h2>
+
+<p>One pattern that emerged during development was the need for optional output based on a quiet flag. This led to the creation of <code>OPrintf()</code>.</p>
+
+<h3>The Problem</h3>
+
+<p>Without OPrintf, the code was littered with conditional checks:</p>
+
+<pre><code>// Repetitive pattern throughout the code:
+if (!quiet) {
+    Printf("Device driver %s not available\n", driverName);
+}
+
+if (!quiet) {
+    Printf("Found %s unit %ld as %s:\n", driverName, unitNum, foundDevice);
+}
+
+if (!quiet) {
+    Printf("%s: has mounted volume \"%s\"\n", cleanName, volumeName);
+}</code></pre>
+
+<h3>The Solution: OPrintf</h3>
+
+<pre><code>/* Global quiet flag for OPrintf */
+static BOOL g_quiet = FALSE;
+
+/**
+ * Optional Printf - only prints if not in quiet mode
+ *
+ * @param format Printf-style format string
+ * @param ... Variable arguments
+ */
+void OPrintf(const char *format, ...) {
+  va_list args;
+  
+  if (!g_quiet) {
+    va_start(args, format);
+    VPrintf((STRPTR)format, (APTR)args);  // AmigaOS VPrintf
+    va_end(args);
+  }
+}</code></pre>
+
+<h3>Benefits</h3>
+
+<ul>
+  <li><strong>Cleaner Code:</strong> No more <code>if (!quiet)</code> scattered everywhere</li>
+  <li><strong>Single Responsibility:</strong> Functions focus on their logic, not output control</li>
+  <li><strong>Easy Maintenance:</strong> Change output behavior in one place</li>
+  <li><strong>Extensible:</strong> Easy to add verbosity levels later</li>
+</ul>
+
+<h3>Usage After Refactoring</h3>
+
+<pre><code>// Clean and simple:
+OPrintf("Device driver %s not available\n", driverName);
+OPrintf("Found %s unit %ld as %s:\n", driverName, unitNum, foundDevice);
+OPrintf("%s: has mounted volume \"%s\"\n", cleanName, volumeName);</code></pre>
+
+<div class="info">
+  <strong>Note:</strong> We use AmigaOS's <code>VPrintf()</code> instead of <code>vprintf()</code> because it's the native variadic print function. The cast to <code>(APTR)</code> is needed because <code>va_list</code> needs to be treated as an AmigaOS pointer type.
+</div>
+
+<h2 id="evolution">9. Code Evolution and Design Decisions</h2>
+
+<h3>Evolution 1: Basic Device Check</h3>
+
+<p>First attempt: Try to open diskimage.device directly</p>
+
+<div class="warning">
+  <strong>Problem:</strong> Opening the device doesn't tell us if a volume is mounted. The device might exist but have "No disk present".
+</div>
+
+<h3>Evolution 2: Check DOS Device List</h3>
+
+<p>Better approach: Look for the DOS device (like IHD101:) and check if it has a volume:</p>
+
+<pre><code>// Lock the device to see if a volume exists
+BPTR lock = Lock("IHD101:", ACCESS_READ);
+if (lock) {
+    struct InfoData *info = AllocMem(sizeof(struct InfoData), MEMF_CLEAR);
+    if (Info(lock, info)) {
+        if (info->id_DiskType != ID_NO_DISK_PRESENT) {
+            // Volume is mounted!
+        }
+    }
+}</code></pre>
+
+<h3>Evolution 3: Support Unit Numbers</h3>
+
+<p>Enhancement: Accept just "101" and find any device using diskimage.device unit 101:</p>
+
+<pre><code>// Walk device list looking for matching driver and unit
+if (IsNumber(args.device)) {
+    FindDeviceByDriverAndUnit("diskimage.device", unitNum, foundName, sizeof(foundName));
+}</code></pre>
+
+<h3>Evolution 4: Generic Device Support</h3>
+
+<p>Final form: Support any device driver, not just diskimage.device:</p>
+
+<pre><code>// Now works with:
+// CheckDosDevice 0 DRIVER trackdisk.device
+// CheckDosDevice 6 DRIVER scsi.device
+// CheckDosDevice IHD101  (defaults to diskimage.device)</code></pre>
+
+<h3>Design Patterns Used</h3>
+
+<ol>
+  <li><strong>Resource Management:</strong> Always pair Create/Delete, Open/Close, Lock/UnLock</li>
+  <li><strong>Error Checking:</strong> Check every allocation and system call</li>
+  <li><strong>BCPL Compatibility:</strong> Handle BPTR and BCPL strings correctly</li>
+  <li><strong>System Safety:</strong> Use Forbid/Permit when walking system lists</li>
+  <li><strong>CLI Integration:</strong> Proper return codes and ReadArgs usage</li>
+  <li><strong>Clean Code:</strong> OPrintf pattern for optional output</li>
+</ol>
+
+<div class="info">
+  <h3>Key Takeaways</h3>
+  <ul>
+    <li>AmigaOS uses message-passing and async I/O extensively</li>
+    <li>BCPL heritage means dealing with shifted pointers and length-prefixed strings</li>
+    <li>No memory protection - one mistake can crash the system</li>
+    <li>Rich CLI environment with sophisticated argument parsing</li>
+    <li>Device/unit model is more formal than Unix device files</li>
+    <li>Clean code patterns like OPrintf make maintenance easier</li>
+  </ul>
+</div>
+
+</body>
+</html>
