@@ -19,7 +19,7 @@
  *   CheckDosDevice DISKIMAGE5
  *
  * Compile with SAS/C:
- *   sc LINK CheckDosDevice.c
+ *   sc link startup=cres smalldata smallcode nostackcheck CheckDosDevice.c
  *
  * @author Brielle Harrison <nyteshade@gmail.com>
  * @author Anthropic Claude Sonnet 4 (29Jun2025)
@@ -41,12 +41,15 @@
 #include <stdarg.h>
 
 /* Version string for AmigaOS version command */
-const char *version =
-  "$VER: CheckDosDevice 1.1 (29.06.2025) "
+const char * const version =
+  "$VER: CheckDosDevice 1.2 (29.06.2025) "
   "Brielle Harrison";
 
 /* Template for ReadArgs */
 #define TEMPLATE "DEVICE/A,QUIET/S,DRIVER/K,INFO/S,MOUNTLIST/S"
+
+/* Magic value to determine if thread local context is ours */
+#define CONTEXT_MAGIC 0x434B4456 /* 'CKDV' */
 
 /* Return codes */
 #define RC_OK          0   /* Device exists with mounted volume */
@@ -54,8 +57,11 @@ const char *version =
 #define RC_ERROR      10   /* Device doesn't exist */
 #define RC_FAIL       20   /* Driver not available */
 
-/* Global quiet flag for OPrintf */
-static BOOL g_quiet = FALSE;
+typedef struct Context {
+  ULONG magic;
+  BOOL quiet;
+  APTR oldContext;
+} Context;
 
 /**
  * Structure for command line arguments
@@ -69,6 +75,10 @@ struct Arguments {
 };
 
 /* Function prototypes */
+Context *GetContext(void);
+void FreeContext(void);
+int exitWith(int rc);
+
 void OPrintf(const char *format, ...);
 BOOL CheckDeviceDriver(const char *driverName);
 BOOL IsNumber(const char *str);
@@ -81,20 +91,59 @@ void GenerateMountlist(const char *deviceName, struct DeviceNode *deviceNode);
 void FindMatchingDevices(const char *pattern);
 const char *GetHandlerFromDosType(ULONG dosType);
 
+Context *GetContext(void) {
+  struct Task *task = FindTask(NULL);
+  Context *context = task->tc_UserData;
+
+  /* Verify it's our context */
+  if (context && context->magic == CONTEXT_MAGIC) {
+    return context;
+  }
+
+  /* Need to allocate */
+  context = AllocVec(sizeof(Context), MEMF_CLEAR);
+  if (!context) {
+    return NULL;  /* Handle allocation failure */
+  }
+
+  context->magic = CONTEXT_MAGIC;
+  context->quiet = FALSE;
+  context->oldContext = task->tc_UserData;
+  task->tc_UserData = (APTR)context;
+
+  return context;
+}
+
+void FreeContext(void) {
+  struct Task *task = FindTask(NULL);
+  if (task->tc_UserData != NULL) {
+    FreeVec(task->tc_UserData);
+    task->tc_UserData = NULL;
+  }
+}
+
 /**
  * Optional Printf - only prints if not in quiet mode
  *
  * @param format Printf-style format string
  * @param ... Variable arguments
  */
-void OPrintf(const char *format, ...) {
-  va_list args;
+ void OPrintf(const char *format, ...) {
+   va_list args;
+   Context *context = GetContext();
+   BOOL b_quiet = FALSE;
 
-  if (!g_quiet) {
-    va_start(args, format);
-    VPrintf((STRPTR)format, (APTR)args);
-    va_end(args);
-  }
+   if (context) {
+     b_quiet = context->quiet;
+   }
+
+   if (!b_quiet) {  /* Add this check */
+     /* Can't get context, just print */
+     va_start(args, format);
+     VPrintf((STRPTR)format, (APTR)args);
+     va_end(args);
+     return;
+   }
 }
 
 /**
@@ -669,12 +718,26 @@ int CheckDeviceStatus(
   return status;
 }
 
+int exitWith(int rc) {
+  struct Task *task = FindTask(NULL);
+  Context *context = (Context *)task->tc_UserData;
+
+  if (context && context->magic == CONTEXT_MAGIC) {
+    task->tc_UserData = context->oldContext;
+    FreeVec(context);
+  }
+
+  return rc;
+}
+
 /**
  * Main entry point
  */
 int main(void) {
   struct RDArgs *rdArgs = NULL;
   struct Arguments args = { NULL, FALSE, NULL, FALSE, FALSE };
+  struct Context *context = GetContext();
+
   char volumeName[64];
   char cleanName[108];
   char foundDevice[108];
@@ -700,11 +763,11 @@ int main(void) {
     Printf("  CheckDosDevice 101 INFO\n");
     Printf("  CheckDosDevice DF0: MOUNTLIST\n");
     Printf("  CheckDosDevice 0 DRIVER trackdisk.device\n");
-    return RC_ERROR;
+    return exitWith(RC_ERROR);
   }
 
   /* Set global quiet flag */
-  g_quiet = args.quiet ? TRUE : FALSE;
+  context->quiet = args.quiet ? TRUE : FALSE;
 
   /* Get driver name (default to diskimage.device) */
   driverName = args.driver ? args.driver : (STRPTR)"diskimage.device";
@@ -719,7 +782,7 @@ int main(void) {
     OPrintf("Device driver %s not available\n", driverName);
     proc->pr_WindowPtr = oldWindowPtr;
     FreeArgs(rdArgs);
-    return RC_FAIL;
+    return exitWith(RC_FAIL);
   }
 
   /* Check if argument is a pure number */
@@ -742,7 +805,7 @@ int main(void) {
       OPrintf("No %s found with unit %ld\n", driverName, unitNum);
       proc->pr_WindowPtr = oldWindowPtr;
       FreeArgs(rdArgs);
-      return RC_ERROR;
+      return exitWith(RC_ERROR);
     }
   }
   else {
@@ -800,7 +863,7 @@ int main(void) {
   /* Free the ReadArgs structure */
   FreeArgs(rdArgs);
 
-  return returnCode;
+  return exitWith(returnCode);
 }
 
 /**

@@ -1,4 +1,6 @@
-FROM LIB:c.o "CheckDosDevice.o"
+FROM LIB:cres.o "CheckDosDevice.o"
 TO "CheckDosDevice"
 LIB LIB:sc.lib LIB:amiga.lib
+SMALLCODE
+SMALLDATA
 
