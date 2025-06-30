@@ -3,13 +3,13 @@
 ## Overview
 
 I worked with Claude (Anthropic AI) to help me generate a utility in a time
-sensitive fashion. I love the Amiga but I am not as familiar with OS based 
-APIs as I'd like. 
+sensitive fashion. I love the Amiga but I am not as familiar with OS based
+APIs as I'd like.
 
 This utility was born out of the needs I found when shell scripting around
 diskimage.device. Its functionality was universal and helpful enough it was
 expanded to work with any dos device (in theory). I have tested it with
-trackdisk.device, scsi.device and uaehf.device, as well as its intended 
+trackdisk.device, scsi.device and uaehf.device, as well as its intended
 target diskimage.device.
 
 It has a few modes of operation. Since it is intended to help with scripting,
@@ -48,3 +48,27 @@ that describes what it was doing and goes over the revisions I made with it.
 View those here:
  * [View the learnings page](https://htmlpreview.github.io/?https://github.com/nyteshade/nea-check-dos-device/blob/main/learnings/learnings.html)
 
+I have also instructed Claude to create a prompt to generate similar learnings
+documents in the future. That is found in `LEARNINGS.prompt.md`. It also gave
+me these instructions:
+
+### Additional Context to Provide:
+
+When using this prompt, also provide:
+
+ 1. **The actual source code** of the project
+ 2. **Target audience background** (e.g., "C programmers learning Rust")
+ 3. **Specific concepts to emphasize** based on what was challenging
+ 4. **Any error messages or problems encountered** during development
+ 5. **The evolution of the code** if available (different versions)
+
+### Key Success Factors:
+
+The best learning documents:
+ - **Show real problems and solutions** from actual development
+ - **Explain foreign concepts** by relating to familiar ones
+ - **Include mistakes and fixes** to help others avoid them
+ - **Provide working examples** that can be adapted
+ - **Document the "why"** not just the "how"
+
+This approach creates documents that are genuinely helpful because they're based on real experience rather than theoretical knowledge. The progressive disclosure and problem-solution format makes complex topics approachable.
