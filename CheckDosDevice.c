@@ -42,11 +42,11 @@
 
 /* Version string for AmigaOS version command */
 const char *version =
-  "$VER: CheckDosDevice 1.0 (29.06.2025) "
+  "$VER: CheckDosDevice 1.1 (29.06.2025) "
   "Brielle Harrison";
 
 /* Template for ReadArgs */
-#define TEMPLATE "DEVICE/A,QUIET/S,DRIVER/K"
+#define TEMPLATE "DEVICE/A,QUIET/S,DRIVER/K,INFO/S,MOUNTLIST/S"
 
 /* Return codes */
 #define RC_OK          0   /* Device exists with mounted volume */
@@ -61,10 +61,25 @@ static BOOL g_quiet = FALSE;
  * Structure for command line arguments
  */
 struct Arguments {
-  STRPTR device;  /* Device name to check */
-  LONG quiet;     /* Suppress output if TRUE */
-  STRPTR driver;  /* Device driver name (default: diskimage.device) */
+  STRPTR device;    /* Device name to check */
+  LONG quiet;       /* Suppress output if TRUE */
+  STRPTR driver;    /* Device driver name (default: diskimage.device) */
+  LONG info;        /* Show device information */
+  LONG mountlist;   /* Generate mountlist entry */
 };
+
+/* Function prototypes */
+void OPrintf(const char *format, ...);
+BOOL CheckDeviceDriver(const char *driverName);
+BOOL IsNumber(const char *str);
+BOOL FindDeviceByDriverAndUnit(const char *driverName, LONG unitNum, char *foundName, int nameSize);
+struct DeviceNode *FindDosDevice(const char *deviceName);
+void StripDeviceName(const char *deviceName, char *cleanName, int bufSize);
+int CheckDeviceStatus(const char *deviceName, char *volumeName, int volumeNameSize);
+void ShowDeviceInfo(const char *deviceName, struct DeviceNode *deviceNode);
+void GenerateMountlist(const char *deviceName, struct DeviceNode *deviceNode);
+void FindMatchingDevices(const char *pattern);
+const char *GetHandlerFromDosType(ULONG dosType);
 
 /**
  * Optional Printf - only prints if not in quiet mode
@@ -74,7 +89,7 @@ struct Arguments {
  */
 void OPrintf(const char *format, ...) {
   va_list args;
-  
+
   if (!g_quiet) {
     va_start(args, format);
     VPrintf((STRPTR)format, (APTR)args);
@@ -144,6 +159,59 @@ BOOL IsNumber(const char *str) {
   }
 
   return TRUE;
+}
+
+/**
+ * Get filesystem handler from DosType
+ *
+ * @param dosType The DosType value from the environment
+ * @return Handler path string
+ */
+const char *GetHandlerFromDosType(ULONG dosType) {
+  switch (dosType) {
+    case 0x444F5300:  /* DOS\0 - OFS */
+    case 0x444F5301:  /* DOS\1 - FFS */
+      return "L:FastFileSystem";
+
+    case 0x444F5302:  /* DOS\2 - OFS INTL */
+    case 0x444F5303:  /* DOS\3 - FFS INTL */
+      return "L:FastFileSystem";
+
+    case 0x444F5304:  /* DOS\4 - OFS DC */
+    case 0x444F5305:  /* DOS\5 - FFS DC */
+      return "L:FastFileSystem";
+
+    case 0x444F5306:  /* DOS\6 - OFS LNFS */
+    case 0x444F5307:  /* DOS\7 - FFS LNFS */
+      return "L:FastFileSystem";
+
+    case 0x50465300:  /* PFS\0 - Professional File System */
+    case 0x50465301:  /* PFS\1 */
+    case 0x50465302:  /* PFS\2 */
+      return "L:PFSFileSystem";
+
+    case 0x53465300:  /* SFS\0 - Smart File System */
+      return "L:SmartFilesystem";
+
+    case 0x4E425500:  /* NBU\0 - NetBSD UFS */
+    case 0x4E425520:  /* NBU  - NetBSD UFS */
+      return "L:NetBSDFileSystem";
+
+    case 0x6D756673:  /* mufs - Multi User File System */
+      return "L:MultiUserFileSystem";
+
+    case 0x41465300:  /* AFS\0 - Ami File Safe */
+    case 0x41465301:  /* AFS\1 */
+      return "L:AmiFileSafe";
+
+    default:
+      /* Check for CrossDOS signatures */
+      if ((dosType & 0xFFFFFF00) == 0x4D534400) {  /* MSD\x - CrossDOS */
+        return "L:CrossDOSFileSystem";
+      }
+      /* Default to FFS for unknown types */
+      return "L:FastFileSystem";
+  }
 }
 
 /**
@@ -233,11 +301,233 @@ BOOL FindDeviceByDriverAndUnit(
 }
 
 /**
- * Check if a DOS device exists
+ * Display device information
  *
- * @param deviceName The device name to check (without colon)
- * @return Pointer to DeviceNode if found, NULL otherwise
+ * @param deviceName Device name
+ * @param deviceNode Device node pointer
  */
+void ShowDeviceInfo(const char *deviceName, struct DeviceNode *deviceNode) {
+  struct FileSysStartupMsg *startup;
+  struct DosEnvec *environ;
+  char *bstrName;
+  char driverName[108];
+
+  OPrintf("\nDevice Information for %s:\n", deviceName);
+  OPrintf("----------------------------------------\n");
+
+  /* Check device type */
+  OPrintf("Type: ");
+  if (deviceNode->dn_Type == DLT_DEVICE) {
+    OPrintf("Device\n");
+  }
+  else if (deviceNode->dn_Type == DLT_VOLUME) {
+    OPrintf("Volume\n");
+  }
+  else {
+    OPrintf("Unknown (%ld)\n", deviceNode->dn_Type);
+  }
+
+  /* Get startup information if available */
+  if (deviceNode->dn_Startup) {
+    startup = (struct FileSysStartupMsg *)BADDR(deviceNode->dn_Startup);
+
+    /* Device driver name */
+    if (startup->fssm_Device) {
+      bstrName = (char *)BADDR(startup->fssm_Device);
+      if (bstrName && bstrName[0] > 0) {
+        int len = bstrName[0];
+        if (len < sizeof(driverName) - 1) {
+          memcpy(driverName, &bstrName[1], len);
+          driverName[len] = '\0';
+          OPrintf("Driver: %s\n", driverName);
+        }
+      }
+    }
+
+    /* Unit number */
+    OPrintf("Unit: %ld\n", (LONG)startup->fssm_Unit);
+    OPrintf("Flags: 0x%08lx\n", startup->fssm_Flags);
+
+    /* Environment vector */
+    if (startup->fssm_Environ) {
+      environ = (struct DosEnvec *)BADDR(startup->fssm_Environ);
+      OPrintf("\nEnvironment:\n");
+      OPrintf("  Surfaces: %ld\n", environ->de_Surfaces);
+      OPrintf("  Blocks per Track: %ld\n", environ->de_BlocksPerTrack);
+      OPrintf("  Reserved Blocks: %ld\n", environ->de_Reserved);
+      OPrintf("  Interleave: %ld\n", environ->de_Interleave);
+      OPrintf("  Low Cylinder: %ld\n", environ->de_LowCyl);
+      OPrintf("  High Cylinder: %ld\n", environ->de_HighCyl);
+      OPrintf("  Buffers: %ld\n", environ->de_NumBuffers);
+      OPrintf("  Buffer Memory Type: 0x%08lx\n", environ->de_BufMemType);
+
+      if (environ->de_TableSize >= 12) {
+        OPrintf("  Max Transfer: 0x%08lx\n", environ->de_MaxTransfer);
+        OPrintf("  Mask: 0x%08lx\n", environ->de_Mask);
+        OPrintf("  Boot Priority: %ld\n", environ->de_BootPri);
+        OPrintf("  DosType: 0x%08lx", environ->de_DosType);
+
+        /* Show DosType as string if printable */
+        if (environ->de_DosType) {
+          char dosTypeStr[5];
+          dosTypeStr[0] = (environ->de_DosType >> 24) & 0xFF;
+          dosTypeStr[1] = (environ->de_DosType >> 16) & 0xFF;
+          dosTypeStr[2] = (environ->de_DosType >> 8) & 0xFF;
+          dosTypeStr[3] = environ->de_DosType & 0xFF;
+          dosTypeStr[4] = '\0';
+          OPrintf(" ('%s')", dosTypeStr);
+        }
+        OPrintf("\n");
+      }
+    }
+  }
+  else {
+    OPrintf("No startup information available\n");
+  }
+
+  /* Handler/filesystem info */
+  if (deviceNode->dn_Handler) {
+    OPrintf("\nHandler: ");
+    bstrName = (char *)BADDR(deviceNode->dn_Handler);
+    if (bstrName && bstrName[0] > 0) {
+      int len = bstrName[0];
+      char handlerName[108];
+      if (len < sizeof(handlerName) - 1) {
+        memcpy(handlerName, &bstrName[1], len);
+        handlerName[len] = '\0';
+        OPrintf("%s\n", handlerName);
+      }
+    }
+    else {
+      OPrintf("0x%08lx\n", deviceNode->dn_Handler);
+    }
+  }
+
+  OPrintf("----------------------------------------\n");
+}
+
+/**
+ * Generate mountlist entry for a device
+ *
+ * @param deviceName Device name
+ * @param deviceNode Device node pointer
+ */
+void GenerateMountlist(const char *deviceName, struct DeviceNode *deviceNode) {
+  struct FileSysStartupMsg *startup;
+  struct DosEnvec *environ;
+  char *bstrName;
+  char driverName[108];
+  char handlerName[108];
+  BOOL hasHandler = FALSE;
+  BOOL useAutoHandler = FALSE;
+
+  OPrintf("\n/* Mountlist entry for %s: */\n", deviceName);
+  OPrintf("%s:\n", deviceName);
+
+  /* Get handler name if available */
+  if (deviceNode->dn_Handler) {
+    bstrName = (char *)BADDR(deviceNode->dn_Handler);
+    if (bstrName && bstrName[0] > 0) {
+      int len = bstrName[0];
+      if (len < sizeof(handlerName) - 1) {
+        memcpy(handlerName, &bstrName[1], len);
+        handlerName[len] = '\0';
+        hasHandler = TRUE;
+      }
+    }
+  }
+
+  /* Get startup information */
+  if (deviceNode->dn_Startup) {
+    startup = (struct FileSysStartupMsg *)BADDR(deviceNode->dn_Startup);
+
+    /* Try to determine handler from DosType if we don't have one */
+    if (!hasHandler && startup->fssm_Environ) {
+      environ = (struct DosEnvec *)BADDR(startup->fssm_Environ);
+      if (environ->de_TableSize >= 12 && environ->de_DosType) {
+        const char *autoHandler = GetHandlerFromDosType(environ->de_DosType);
+        strcpy(handlerName, autoHandler);
+        hasHandler = TRUE;
+        useAutoHandler = TRUE;
+      }
+    }
+
+    /* Output handler */
+    if (hasHandler) {
+      OPrintf("    Handler = %s", handlerName);
+      if (useAutoHandler) {
+        OPrintf("  /* Detected from DosType */");
+      }
+      OPrintf("\n");
+    }
+    else {
+      OPrintf("    Handler = L:FastFileSystem  /* Update as needed */\n");
+    }
+
+    /* Device driver name */
+    if (startup->fssm_Device) {
+      bstrName = (char *)BADDR(startup->fssm_Device);
+      if (bstrName && bstrName[0] > 0) {
+        int len = bstrName[0];
+        if (len < sizeof(driverName) - 1) {
+          memcpy(driverName, &bstrName[1], len);
+          driverName[len] = '\0';
+          OPrintf("    Device = %s\n", driverName);
+        }
+      }
+    }
+
+    /* Unit number */
+    OPrintf("    Unit = %ld\n", (LONG)startup->fssm_Unit);
+
+    /* Flags */
+    if (startup->fssm_Flags != 0) {
+      OPrintf("    Flags = %ld\n", startup->fssm_Flags);
+    }
+
+    /* Environment vector */
+    if (startup->fssm_Environ) {
+      environ = (struct DosEnvec *)BADDR(startup->fssm_Environ);
+
+      OPrintf("    Surfaces = %ld\n", environ->de_Surfaces);
+      OPrintf("    BlocksPerTrack = %ld\n", environ->de_BlocksPerTrack);
+      if (environ->de_Reserved != 2) {
+        OPrintf("    Reserved = %ld\n", environ->de_Reserved);
+      }
+      if (environ->de_Interleave != 0) {
+        OPrintf("    Interleave = %ld\n", environ->de_Interleave);
+      }
+      OPrintf("    LowCyl = %ld\n", environ->de_LowCyl);
+      OPrintf("    HighCyl = %ld\n", environ->de_HighCyl);
+      OPrintf("    Buffers = %ld\n", environ->de_NumBuffers);
+
+      /* Optional extended parameters */
+      if (environ->de_TableSize >= 12) {
+        if (environ->de_BufMemType != 0) {
+          OPrintf("    BufMemType = 0x%08lx\n", environ->de_BufMemType);
+        }
+        if (environ->de_MaxTransfer != 0x7FFFFFFF) {
+          OPrintf("    MaxTransfer = 0x%08lx\n", environ->de_MaxTransfer);
+        }
+        if (environ->de_Mask != 0xFFFFFFFE) {
+          OPrintf("    Mask = 0x%08lx\n", environ->de_Mask);
+        }
+        if (environ->de_BootPri != 0) {
+          OPrintf("    BootPri = %ld\n", environ->de_BootPri);
+        }
+        if (environ->de_DosType != 0x444F5300) { /* DOS\0 */
+          OPrintf("    DosType = 0x%08lx\n", environ->de_DosType);
+        }
+      }
+    }
+  }
+  else {
+    OPrintf("    /* No device information available */\n");
+    OPrintf("    /* You'll need to fill in the details manually */\n");
+  }
+
+  OPrintf("#\n");
+}
 struct DeviceNode *FindDosDevice(const char *deviceName) {
   struct RootNode *rootNode;
   struct DosInfo *dosInfo;
@@ -384,11 +674,14 @@ int CheckDeviceStatus(
  */
 int main(void) {
   struct RDArgs *rdArgs = NULL;
-  struct Arguments args = { NULL, FALSE, NULL };
+  struct Arguments args = { NULL, FALSE, NULL, FALSE, FALSE };
   char volumeName[64];
   char cleanName[108];
   char foundDevice[108];
   STRPTR driverName;
+  struct DeviceNode *deviceNode;
+  struct Process *proc;
+  APTR oldWindowPtr;
   int status;
   int returnCode = RC_ERROR;
   LONG unitNum;
@@ -396,15 +689,17 @@ int main(void) {
   /* Parse command line arguments */
   rdArgs = ReadArgs(TEMPLATE, (LONG *)&args, NULL);
   if (!rdArgs) {
-    Printf("Usage: CheckDosDevice <DEVICE> [QUIET] [<DRIVER> driver name]\n");
-    Printf("  DEVICE - DOS device name or unit number\n");
-    Printf("  QUIET  - Suppress output\n");
-    Printf("  DRIVER - Device driver name (default: diskimage.device)\n");
+    Printf("Usage: CheckDosDevice <DEVICE> [QUIET] [<DRIVER> driver] [INFO] [MOUNTLIST]\n");
+    Printf("  DEVICE    - DOS device name or unit number\n");
+    Printf("  QUIET     - Suppress output\n");
+    Printf("  DRIVER    - Device driver name (default: diskimage.device)\n");
+    Printf("  INFO      - Show detailed device information\n");
+    Printf("  MOUNTLIST - Generate mountlist entry\n");
     Printf("\nExamples:\n");
     Printf("  CheckDosDevice IHD101\n");
-    Printf("  CheckDosDevice 101 (finds device with unit 101)\n");
+    Printf("  CheckDosDevice 101 INFO\n");
+    Printf("  CheckDosDevice DF0: MOUNTLIST\n");
     Printf("  CheckDosDevice 0 DRIVER trackdisk.device\n");
-    Printf("  CheckDosDevice DF0:\n");
     return RC_ERROR;
   }
 
@@ -414,9 +709,15 @@ int main(void) {
   /* Get driver name (default to diskimage.device) */
   driverName = args.driver ? args.driver : (STRPTR)"diskimage.device";
 
+  /* Disable system requesters early to prevent any popups */
+  proc = (struct Process *)FindTask(NULL);
+  oldWindowPtr = proc->pr_WindowPtr;
+  proc->pr_WindowPtr = (APTR)-1L;
+
   /* First check if the device driver is available */
   if (!CheckDeviceDriver(driverName)) {
     OPrintf("Device driver %s not available\n", driverName);
+    proc->pr_WindowPtr = oldWindowPtr;
     FreeArgs(rdArgs);
     return RC_FAIL;
   }
@@ -439,6 +740,7 @@ int main(void) {
     }
     else {
       OPrintf("No %s found with unit %ld\n", driverName, unitNum);
+      proc->pr_WindowPtr = oldWindowPtr;
       FreeArgs(rdArgs);
       return RC_ERROR;
     }
@@ -448,30 +750,52 @@ int main(void) {
     StripDeviceName(args.device, cleanName, sizeof(cleanName));
   }
 
-  /* Check device status */
-  status = CheckDeviceStatus(cleanName, volumeName, sizeof(volumeName));
+  /* Get device node for INFO/MOUNTLIST operations */
+  deviceNode = FindDosDevice(cleanName);
 
-  switch (status) {
-    case 0:  /* Volume mounted */
-      if (volumeName[0]) {
-        OPrintf("%s: has mounted volume \"%s\"\n", cleanName, volumeName);
-      }
-      else {
-        OPrintf("%s: has mounted volume\n", cleanName);
-      }
-      returnCode = RC_OK;
-      break;
-
-    case 1:  /* No disk present */
-      OPrintf("%s: no disk present\n", cleanName);
-      returnCode = RC_WARN;
-      break;
-
-    case -1:  /* Device not found */
-      OPrintf("%s: device not found\n", cleanName);
-      returnCode = RC_ERROR;
-      break;
+  /* Show device info if requested */
+  if (args.info && deviceNode) {
+    ShowDeviceInfo(cleanName, deviceNode);
   }
+
+  /* Generate mountlist if requested */
+  if (args.mountlist && deviceNode) {
+    GenerateMountlist(cleanName, deviceNode);
+  }
+
+  /* Check device status (unless we only want info/mountlist) */
+  if (!args.info && !args.mountlist) {
+    status = CheckDeviceStatus(cleanName, volumeName, sizeof(volumeName));
+
+    switch (status) {
+      case 0:  /* Volume mounted */
+        if (volumeName[0]) {
+          OPrintf("%s: has mounted volume \"%s\"\n", cleanName, volumeName);
+        }
+        else {
+          OPrintf("%s: has mounted volume\n", cleanName);
+        }
+        returnCode = RC_OK;
+        break;
+
+      case 1:  /* No disk present */
+        OPrintf("%s: no disk present\n", cleanName);
+        returnCode = RC_WARN;
+        break;
+
+      case -1:  /* Device not found */
+        OPrintf("%s: device not found\n", cleanName);
+        returnCode = RC_ERROR;
+        break;
+    }
+  }
+  else if (deviceNode) {
+    /* If only info/mountlist requested and device exists, return OK */
+    returnCode = RC_OK;
+  }
+
+  /* Restore requester state */
+  proc->pr_WindowPtr = oldWindowPtr;
 
   /* Free the ReadArgs structure */
   FreeArgs(rdArgs);
