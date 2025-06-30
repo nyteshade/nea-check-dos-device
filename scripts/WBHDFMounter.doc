@@ -1,0 +1,24 @@
+WBHDFMounter
+
+This is a simple script that uses CheckDosDevice to find the next available
+unit on which to mount a HDF file automatically.
+
+Requirements:
+ - DiskImageGUI has been installed
+ - MountHDF is available in path
+ - CheckDosDevice is available either resident or in path
+
+Install the script to S:
+  Copy WBHDFMounter S:
+  Protect WBHDFMounter RWEDS
+
+Open you HDF's icon information using Right-Amiga I.
+
+ 1. Select the Icon tab
+ 2. Set the Default tool to S:WBHDFMounter
+ 3. Set "Start from:" to Shell
+ 4. Disable the checkmark for "Prompt for input:"
+
+ Save and exit
+
+ Now simply double click the HDF icon and it will mount (hopefully)

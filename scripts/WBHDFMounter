@@ -1,0 +1,39 @@
+; $VER: WBHDFMounter 1.0 (29.6.2025) Brielle Harrison
+; Mounts the supplied drive on the next available 
+; diskimage.device slot starting at 100.
+
+.key HDF
+
+Failat 21
+Set Unit 99
+Set mRC 0
+
+Lab TryAgain
+  Set Unit "`Eval ${Unit} + 1`"
+  
+  CheckDosDevice ${Unit} Quiet
+  Set mRC ${RC}  ; Capture the RC value to check states
+  
+  If ${mRC} Eq 0
+    Skip TryAgain Back
+  EndIf
+  
+  If ${mRC} Eq 5
+    Skip TryAgain Back
+  EndIf
+  
+  If ${mRC} Eq 10
+    Skip MountIt
+  EndIf
+  
+  If ${mRC} Eq 20
+    Echo "diskimage.device is not available. quitting..."
+    Skip Quit
+  EndIf
+  
+Lab MountIt
+  MountHDF HDF "<HDF>" UNIT ${Unit}
+  
+Lab Quit
+  UnSet Unit
+  UnSet mRC
