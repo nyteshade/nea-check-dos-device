@@ -21,6 +21,12 @@
  * Compile with SAS/C:
  *   sc link startup=cres smalldata smallcode nostackcheck CheckDosDevice.c
  *
+ * Set Pure and Hold bits:
+ *   protect CheckDosDevice RWEDPH
+ *
+ * In OS 3.9 or 3.2.3+, the H bit will automatically resident the command
+ * after it has been executed one time.
+ *
  * @author Brielle Harrison <nyteshade@gmail.com>
  * @author Anthropic Claude Sonnet 4 (29Jun2025)
  */
